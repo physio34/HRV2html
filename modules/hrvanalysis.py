@@ -28,7 +28,7 @@ import traceback
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import Tuple, List, Dict, Optional, Any
+from typing import Tuple, List, Dict, Optional, Any, Union
 
 import numpy as np
 import pandas as pd
@@ -819,8 +819,9 @@ def detect_rr_column(df: pd.DataFrame) -> str:
     return rr_col
 
 
-def load_rr_intervals_from_file(filepath: Path) -> np.ndarray:
+def load_rr_intervals_from_file(filepath: Union[str, Path]) -> np.ndarray:
     """Загрузка RR-интервалов из CSV или TXT файла."""
+    filepath = Path(filepath)
     for delimiter in [',', ';', '\t', ' ', None]:
         try:
             df = pd.read_csv(filepath, delimiter=delimiter)
@@ -1046,8 +1047,7 @@ def build_results_table_vertical(features: Dict[str, float], norms: Dict[str, Di
         unit_str = f" {unit}" if unit else ""
         value_str = f"{value:.3f}{unit_str}"
         
-        # Колонка "Статус" удалена; цвет светофора перенесён на ячейку
-        # "Интерпретация" (фон = цвет индикатора, текст — белый).
+        #  цвет светофора  в ячейке "Интерпретация" (фон = цвет индикатора, текст — белый).
         font_color = "#000000" if interp["color"] == "#ffc107" else "#ffffff"
         rows_html += f"""
         <tr>
@@ -1077,15 +1077,13 @@ def save_html_report(features_list: List[Dict[str, float]], plots: Dict[str, plt
         "box-shadow: 0 0 40px rgba(0,0,0,0.6); }"
         ".modal-content img { width: 100%; height: auto; }"
         ".close-modal { font-size: 2.5rem; }"
-        # Шапка блока — фиксированная; имя файла вынесено в подзаголовок.
         ".block-title { color: #dc3545; border-bottom: 2px solid #dc3545; "
         "padding-bottom: 0.3rem; margin: 1.5rem 0 0.4rem; font-size: 1.2rem; }"
         ".test-subtitle { color: #0d6efd; margin: 0 0 0.8rem; font-size: 1rem; "
         "font-weight: 600; }"
         "</style>"
     )
-    builder = HTMLReportBuilder(title="💓 Отчет по анализу вариабельности сердечного ритма",
-                                source_file=str(out_path))
+    builder = HTMLReportBuilder(title="💓 Отчет по анализу вариабельности сердечного ритма")
 
     # Расширяем зум модального окна при клике (добавляется как сырой HTML).
     builder.add_html(ZOOM_MODAL_CSS, as_section=False)
@@ -1095,18 +1093,16 @@ def save_html_report(features_list: List[Dict[str, float]], plots: Dict[str, plt
         rows_html = build_results_table_vertical(features, norms)
         block = (
             f'<div class="result-block">'
-            f'<h3 class="block-title">Результаты анализа</h3>'
-            f'<h4 class="test-subtitle">{test_id}</h4>'
             f'<table class="results-table">'
             f'<thead><tr><th>Показатель</th><th>Значение</th>'
             f'<th>Интерпретация</th></tr></thead>'
             f'<tbody>{rows_html}</tbody></table>'
             f'</div>'
         )
-        builder.add_html(block, as_section=True)
+        builder.add_html(block, as_section=True, title=test_id)
 
     for test_id, fig in plots.items():
-        builder.add_figure(fig, title=test_id)
+        builder.add_figure(fig, title="Визуализация")
 
     builder.save(str(out_path))
     print(f"✅ HTML-отчет сохранен: {out_path}")

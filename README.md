@@ -16,9 +16,7 @@ adHRV2html/
 │   ├── html_report_builder.py  # HTML report generator (clickable plots)
 │   └── hrv_norms.json          # normative config ("traffic light")
 ├── analys_individual.py        # ONE file/dir  -> HTML report
-├── analys_group.py             # ALL .txt in dir -> single XLSX report
-├── analys_with_neurokit2.py    # universal analyzer (time/nonlinear via neurokit2, spectrum via shared core)
-└── main.py                     # self-contained universal analyzer
+└── analys_group.py             # ALL .txt in dir -> single XLSX report
 ```
 
 Imports come from the `modules` package, so the scripts are run from the root
@@ -27,15 +25,13 @@ of `adHRV2html/` (it is added to `sys.path` automatically on launch and in tests
 ## Dependencies
 
 ```bash
-pip install numpy scipy pandas matplotlib openpyxl antropy neurokit2
+pip install numpy scipy pandas matplotlib openpyxl antropy
 ```
 
 - `antropy` is used as a fallback (reference) implementation for Sample/Fuzzy/
   Multiscale Entropy; the primary Sample Entropy is a custom `scipy.spatial.cKDTree`
   implementation.
-- `neurokit2` is used only by `analys_with_neurokit2.py` (time-domain and nonlinear
-  metrics); the spectral powers in all three scripts are computed by **the same**
-  engine (see below).
+- `neurokit2` is removed (see below).
 
 ## Unified spectral engine
 
@@ -65,14 +61,6 @@ the same analysis core as the individual script, and writes one summary table.
 Columns: the base metrics of the analysis core (time-domain, spectral, entropy,
 nonlinear, Poincaré, Baevsky indices) **plus** `sd2_sd1_ratio`, `peak_vlf_hz`,
 `peak_lf_hz`, `peak_hf_hz`, `fraction_lf_nu`, `fraction_hf_nu`.
-
-**Universal report (HTML + XLSX, metrics via neurokit2):**
-```bash
-python analys_with_neurokit2.py --file data.txt
-python analys_with_neurokit2.py --dir ./data --all
-```
-Spectral powers go through the shared engine (as above); time-domain/nonlinear
-(SDNN, RMSSD, SD1/SD2, SampEn, DFA α1) go through `neurokit2`.
 
 ---
 
@@ -147,8 +135,7 @@ the "Interpretation" cell).
   set (to recompute interpretations/colors).
 
 ### 8. Nonlinear analysis performance
-Benchmarks on `АСЛАНОВ_БАЗА_ТЕСТЫ_epoch_01_Whole_File.txt` (n≈3040 RR after
-filtering; see `WHATS.new`):
+Benchmarks on 3040 RR after filtering; see `WHATS.new`:
 
 | Script | Nonlinear block | Time |
 |---|---|---|

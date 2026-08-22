@@ -16,9 +16,7 @@ adHRV2html/
 │   ├── html_report_builder.py  # генератор HTML-отчётов (кликабельные графики)
 │   └── hrv_norms.json          # конфиг нормативов («светофор»)
 ├── analys_individual.py        # ОДИН файл/каталог → HTML-отчёт
-├── analys_group.py             # ВСЕ .txt в каталоге → ОБЩИЙ XLSX-отчёт
-├── analys_with_neurokit2.py    # универсальный анализатор (врем./нелин. через neurokit2, спектр — общий движок)
-└── main.py                     # универсальный анализатор (самодостаточная копия ядра)
+└── analys_group.py             # ВСЕ .txt в каталоге → ОБЩИЙ XLSX-отчёт
 ```
 
 Импорт идёт из пакета `modules`, поэтому скрипты запускаются из корня
@@ -33,20 +31,15 @@ pip install numpy scipy pandas matplotlib openpyxl antropy neurokit2
 - `antropy` используется как запасной (эталонный) вариант для Sample/Fuzzy/
   Multiscale Entropy; основной расчёт Sample Entropy — собственный на базе
   `scipy.spatial.cKDTree`.
-- `neurokit2` используется только в `analys_with_neurokit2.py` (временные и
-  нелинейные метрики); спектральные мощности во всех трёх скриптах считаются
-  **одним и тем же** движком (см. ниже).
 
 ## Единый спектральный движок
 
-`analys_individual.py`, `analys_group.py` и `analys_with_neurokit2.py`
+`analys_individual.py`, `analys_group.py`
 генерируют **идентичные** спектральные величины (VLF/LF/HF/TP, LF/HF,
-нормированные единицы LF nu / HF nu), поскольку все они используют
+нормированные единицы LF nu / HF nu), поскольку они используют
 `modules.hrvanalysis.compute_frequency_domain_features` (метод Уэлча,
 ресемплинг на равномерную сетку 4 Гц, **линейная** интерполяция,
-интегрирование методом трапеций). Ранее `analys_with_neurokit2.py`
-считал спектр через `neurokit2.hrv_frequency` (значения в с², не совпадали
-с PSD-графиком) — это исправлено.
+интегрирование методом трапеций).
 
 ## Использование
 
@@ -67,15 +60,6 @@ python analys_group.py --dir . --output hrv_group_report.xlsx
 спектральные, энтропийные, нелинейные, Poincaré, индексы Баевского) **плюс**
 `sd2_sd1_ratio`, `peak_vlf_hz`, `peak_lf_hz`, `peak_hf_hz`, `fraction_lf_nu`,
 `fraction_hf_nu`.
-
-**Универсальный отчёт (HTML + XLSX, метрики через neurokit2):**
-```bash
-python analys_with_neurokit2.py --file data.txt
-python analys_with_neurokit2.py --dir ./data --all
-```
-Спектральные мощности — через общий движок (как выше); временные/нелинейные
-(SDNN, RMSSD, SD1/SD2, SampEn, DFA α1) — через `neurokit2`.
-
 ---
 
 ## Методологические рекомендации по применению энтропийных метрик
@@ -151,8 +135,7 @@ python analys_with_neurokit2.py --dir ./data --all
   свой набор (для пересчёта интерпретаций/цветов).
 
 ### 8. Производительность нелинейного анализа
-Замеры на `АСЛАНОВ_БАЗА_ТЕСТЫ_epoch_01_Whole_File.txt` (n≈3040 RR после
-фильтрации; см. `WHATS.new`):
+Замеры на n≈3040 RR после фильтрации; см. `WHATS.new`:
 
 | Скрипт | Нелинейный блок | Время |
 |---|---|---|

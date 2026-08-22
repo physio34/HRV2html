@@ -25,14 +25,14 @@ class HTMLReportBuilder:
         self._html_parts: List[str] = []
         self._fig_counter = 0
 
-    def add_html(self, html_content: str, as_section: bool = True):
+    def add_html(self, html_content: str, as_section: bool = True, title: str = ""):
         if not html_content:
             return
         cleaned = re.sub(r'[═╔╚║╠╣╦╩╬\-]{2,}', '', html_content)
         cleaned = re.sub(r'\n\s*\n+', '\n', cleaned).strip()
 
         if as_section:
-            self.sections.append({"type": "raw_html", "content": cleaned})
+            self.sections.append({"type": "raw_html", "content": cleaned, "title": title})
         else:
             self._html_parts.append(cleaned)
 
@@ -144,12 +144,12 @@ class HTMLReportBuilder:
         for section in grouped_sections:
             s_type = section["type"]
             rendered = " "
-            title = " "
+            title = "Количественные результаты"
             icon = "📊 "
 
             if s_type == "raw_html":
                 rendered = section["content"]
-                title = " "
+                title = (section.get("title") or "").strip() or " "
 
             elif s_type == "preview":
                 icon = "📄 "
@@ -249,7 +249,7 @@ class HTMLReportBuilder:
 </head>
 <body>
 <div class="container">
-<div class="header"><h1>📊 {self.title}</h1></div>
+<div class="header"><h1>{self.title}</h1></div>
 <div class="content">
 {"\n".join(sections_html)}
 {" ".join(self._html_parts)}
