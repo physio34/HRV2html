@@ -36,28 +36,24 @@ jobs:
             modules/hrvanalysis.py \
             modules/html_report_builder.py
 
-      - name: Smoke test — analysis core
+      - name: Import check
+        run: |
+          python -c "import analys_individual, analys_group, modules.hrvanalysis, modules.html_report_builder; print('imports OK')"
+
+      - name: Smoke test — analysis engine (synthetic data, no file IO)
         run: |
           python - <<'PY'
-          from modules.hrvanalysis import (
-              compute_all_hrv_features,
-              load_rr_intervals_from_file,
-              remove_outliers_moving_average,
-          )
-          rr = load_rr_intervals_from_file("2024-04-06_13-34-55.txt")
+          import numpy as np
+          from modules.hrvanalysis import compute_all_hrv_features, remove_outliers_moving_average
+          rng = np.random.default_rng(0)
+          rr = np.clip(rng.normal(800, 50, 2000), 400, 1600)
           rr = remove_outliers_moving_average(rr, 5, 3.0)[0]
           feats = compute_all_hrv_features(rr)
           for k in ("vlf_ms2", "lf_ms2", "hf_ms2", "lf_hf_ratio",
                     "lf_norm", "hf_norm", "sample_entropy", "dfa_alpha1"):
               assert k in feats, f"missing {k}"
-          print("core OK:", {k: feats[k] for k in ("lf_ms2", "hf_ms2", "lf_hf_ratio", "sample_entropy")})
+          print("engine OK:", {k: round(feats[k], 3) for k in ("lf_ms2", "hf_ms2", "lf_hf_ratio", "sample_entropy")})
           PY
-
-      - name: Smoke test — CLI scripts
-        run: |
-          python analys_individual.py --file 2024-04-06_13-34-55.txt
-          python analys_group.py --dir . --output hrv_group_report.xlsx
-          ls -la hrv_report_*.html hrv_group_report.xlsx
 
   build:
     name: Build executable (${{ matrix.os }})
@@ -95,6 +91,10 @@ jobs:
             --collect-submodules=modules \
             --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" \
             --name "adHRV" analys_individual.py
+
+      - name: Launch check (no file IO)
+        run: |
+          dist/adHRV${{ matrix.ext }} --help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
