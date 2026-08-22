@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.13"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -83,18 +83,10 @@ jobs:
           pip install numpy scipy pandas matplotlib openpyxl antropy pyinstaller
 
       - name: Build executable
-        run: |
-          pyinstaller --clean --onefile \
-            --paths="${{ github.workspace }}" \
-            --hidden-import=modules.hrvanalysis \
-            --hidden-import=modules.html_report_builder \
-            --collect-submodules=modules \
-            --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" \
-            --name "adHRV" analys_individual.py
+        run: pyinstaller --clean --onefile --paths="${{ github.workspace }}" --hidden-import=modules.hrvanalysis --hidden-import=modules.html_report_builder --collect-submodules=modules --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" --name "adHRV" analys_individual.py
 
       - name: Launch check (no file IO)
-        run: |
-          dist/adHRV${{ matrix.ext }} --help
+        run: ./dist/adHRV${{ matrix.ext }} --help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

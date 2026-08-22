@@ -28,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -36,14 +36,7 @@ jobs:
           pip install numpy scipy pandas matplotlib openpyxl antropy pyinstaller
 
       - name: Build executable
-        run: |
-          pyinstaller --clean --onefile \
-            --paths="${{ github.workspace }}" \
-            --hidden-import=modules.hrvanalysis \
-            --hidden-import=modules.html_report_builder \
-            --collect-submodules=modules \
-            --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" \
-            --name "adHRV" analys_individual.py
+        run: pyinstaller --clean --onefile --paths="${{ github.workspace }}" --hidden-import=modules.hrvanalysis --hidden-import=modules.html_report_builder --collect-submodules=modules --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" --name "adHRV" analys_individual.py
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
