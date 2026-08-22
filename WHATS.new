@@ -1,0 +1,39 @@
+WHATS NEW / ИЗМЕНЕНИЯ
+=====================
+
+2026-08-22  v1.0.0  (modules/hrvanalysis.__version__)
+---------------------------------------------------
+- Добавлена версия в modules/hrvanalysis.py: __version__ = "1.0.0".
+- Унификация спектрального движка. analys_with_neurokit2.py теперь считает
+  спектр через общий modules.hrvanalysis.compute_frequency_domain_features
+  (Уэлч, fs=4 Гц, линейная интерполяция) — так же, как analys_individual.py и
+  analys_group.py. Ранее использовался neurokit2.hrv_frequency (значения в с²,
+  не совпадали с PSD-графиком). Теперь все три скрипта генерируют идентичные
+  спектральные величины: VLF/LF/HF/TP, LF/HF, LF nu / HF nu.
+- PSD-график в analys_with_neurokit2.py теперь рисуется тем же движком, что и
+  числа в отчёте (устранено расхождение «график ≠ таблица»).
+- Документация: README.md переименован в README_ru.md (актуализирован под
+  текущие analys_*.py), добавлен английский README.md.
+
+ПРОИЗВОДИТЕЛЬНОСТЬ НЕЛИНЕЙНОГО АНАЛИЗА
+---------------------------------------
+Замер на АСЛАНОВ_БАЗА_ТЕСТЫ_epoch_01_Whole_File.txt
+(n≈3040 RR после фильтрации скользящим средним, из 3154 исходных):
+
+  analys_individual.py
+    блок compute_entropy_features (SampEn, DFA α1/α2, ApEn, FuzzyEn, MSE): ≈ 3.5 с
+      SampEn    102 мс
+      DFA α1/α2 430 мс
+      ApEn      713 мс
+      FuzzyEn  2072 мс
+      MSE       142 мс
+
+  analys_with_neurokit2.py
+    блок nk.hrv_nonlinear (SD1, SD2, SampEn, DFA α1):             ≈ 18.6 с
+    (контрольные замеры: 19.7 / 19.4 / 19.1 с — стабильно, не артефакт прогрева)
+
+ВЫВОД: analys_with_neurokit2.py в ~5.3 раза МЕДЛЕННЕЕ полного нелинейного
+блока analys_individual.py, хотя считает МЕНЬШЕ метрик (без ApEn/FuzzyEn/MSE).
+Узкое место — внутренняя реализация SampEn/DFA в neurokit2.
+Для максимальной скорости нелинейного анализа используйте
+analys_individual.py / analys_group.py.

@@ -1,0 +1,51 @@
+name: Deploy Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            sep: ":"
+            ext: ""
+          - os: windows-latest
+            sep: ";"
+            ext: ".exe"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy pandas matplotlib openpyxl antropy pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller --clean --onefile \
+            --paths="${{ github.workspace }}" \
+            --hidden-import=modules.hrvanalysis \
+            --hidden-import=modules.html_report_builder \
+            --collect-submodules=modules \
+            --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" \
+            --name "adHRV" analys_individual.py
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/adHRV${{ matrix.ext }}

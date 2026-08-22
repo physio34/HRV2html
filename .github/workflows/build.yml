@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy pandas matplotlib openpyxl antropy
+
+      - name: Syntax check
+        run: |
+          python -m py_compile \
+            analys_individual.py \
+            analys_group.py \
+            modules/hrvanalysis.py \
+            modules/html_report_builder.py
+
+      - name: Smoke test — analysis core
+        run: |
+          python - <<'PY'
+          from modules.hrvanalysis import (
+              compute_all_hrv_features,
+              load_rr_intervals_from_file,
+              remove_outliers_moving_average,
+          )
+          rr = load_rr_intervals_from_file("2024-04-06_13-34-55.txt")
+          rr = remove_outliers_moving_average(rr, 5, 3.0)[0]
+          feats = compute_all_hrv_features(rr)
+          for k in ("vlf_ms2", "lf_ms2", "hf_ms2", "lf_hf_ratio",
+                    "lf_norm", "hf_norm", "sample_entropy", "dfa_alpha1"):
+              assert k in feats, f"missing {k}"
+          print("core OK:", {k: feats[k] for k in ("lf_ms2", "hf_ms2", "lf_hf_ratio", "sample_entropy")})
+          PY
+
+      - name: Smoke test — CLI scripts
+        run: |
+          python analys_individual.py --file 2024-04-06_13-34-55.txt
+          python analys_group.py --dir . --output hrv_group_report.xlsx
+          ls -la hrv_report_*.html hrv_group_report.xlsx
+
+  build:
+    name: Build executable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            sep: ":"
+            ext: ""
+          - os: windows-latest
+            sep: ";"
+            ext: ".exe"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy pandas matplotlib openpyxl antropy pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller --clean --onefile \
+            --paths="${{ github.workspace }}" \
+            --hidden-import=modules.hrvanalysis \
+            --hidden-import=modules.html_report_builder \
+            --collect-submodules=modules \
+            --add-data "modules/hrv_norms.json${{ matrix.sep }}modules" \
+            --name "adHRV" analys_individual.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adHRV-${{ matrix.os }}
+          path: dist/adHRV${{ matrix.ext }}
