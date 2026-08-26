@@ -57,6 +57,14 @@ def parse_arguments():
 
 
 def main():
+    # Принудительно UTF-8 вывод, чтобы эмодзи/кириллица не падали в консолях Windows (cp1252).
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            if _s is not None and hasattr(_s, "reconfigure"):
+                _s.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     print("=" * 60)
     print("💓 УНИВЕРСАЛЬНЫЙ АНАЛИЗАТОР ВАРИАБЕЛЬНОСТИ СЕРДЕЧНОГО РИТМА")
     print("=" * 60)
