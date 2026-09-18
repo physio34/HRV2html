@@ -50,15 +50,15 @@ def find_txt_files(directory: Path) -> List[Path]:
 
 def analyze_file(fpath: Path) -> Dict[str, Any]:
     """Полный анализ одного файла; возвращает строку для общего отчёта."""
-    rr_original = load_rr_intervals_from_file(fpath)
+    rr_original, time_column = load_rr_intervals_from_file(fpath)
     rr_original = preprocess_rr_intervals(rr_original, min_duration_min=2.0)
 
-    rr_filtered, n_removed = remove_outliers_moving_average(
-        rr_original, window_size=5, threshold=3.0)
+    rr_filtered, n_removed, time_column_filtered = remove_outliers_moving_average(
+        rr_original, window_size=5, threshold=3.0, time_column=time_column)
     if len(rr_filtered) < 50:
         raise ValueError(f"Слишком мало RR после фильтрации ({len(rr_filtered)})")
 
-    feats = compute_all_hrv_features(rr_filtered)
+    feats = compute_all_hrv_features(rr_filtered, time_column=time_column_filtered)
 
     # Poincaré SD1/SD2 и их отношение.
     rr_n = rr_filtered[:-1]
@@ -70,7 +70,7 @@ def analyze_file(fpath: Path) -> Dict[str, Any]:
     feats["sd2_sd1_ratio"] = round(sd2 / sd1, 3) if sd1 > 0 else np.nan
 
     # Спектральные пики и нормированные доли.
-    peaks = compute_spectral_peak_features(rr_filtered)
+    peaks = compute_spectral_peak_features(rr_filtered, time_column=time_column_filtered)
     feats.update(peaks)
 
     row = {"filename": fpath.name}
