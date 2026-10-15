@@ -218,20 +218,19 @@ def main():
 
             feats = compute_all_hrv_features(rr_intervals_filtered, time_column=time_column_filtered)
 
-            # Вычисляем SD1 и SD2 для добавления в результаты
+            # SD1/SD2 уже посчитаны в compute_all_hrv_features (ddof=1); берём их
             rr_n = rr_intervals_filtered[:-1]
             rr_n1 = rr_intervals_filtered[1:]
-            sd1 = np.std(rr_n1 - rr_n) / np.sqrt(2)
-            sd2 = np.std(rr_n1 + rr_n) / np.sqrt(2)
-            feats["sd1_ms"] = round(sd1, 2)
-            feats["sd2_ms"] = round(sd2, 2)
+            sd1 = float(feats.get("sd1_ms", float("nan")))
+            sd2 = float(feats.get("sd2_ms", float("nan")))
 
             feats["test_id"] = item["id"]
-            feats["n_removed_outliers"] = n_removed
+            feats["n_removed_outliers"] = int(n_removed)
             features_list.append(feats)
 
             fig = plot_hrv_analysis(rr_intervals_for_plot, rr_intervals_filtered,
-                                    title=item["id"], time_column=time_column_filtered)
+                                    title=item["id"], time_column=time_column_filtered,
+                                    n_removed_outliers=int(n_removed))
             plots_dict[item["id"]] = fig
 
             print(f"   {_c('✅', C.GREEN)} OK | Mean RR: {feats['mean_rr_ms']:.1f} мс | SDNN: {feats['sdnn_ms']:.1f} мс | SD1: {sd1:.1f} мс | SD2: {sd2:.1f} мс")

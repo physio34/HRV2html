@@ -60,13 +60,9 @@ def analyze_file(fpath: Path) -> Dict[str, Any]:
 
     feats = compute_all_hrv_features(rr_filtered, time_column=time_column_filtered)
 
-    # Poincaré SD1/SD2 и их отношение.
-    rr_n = rr_filtered[:-1]
-    rr_n1 = rr_filtered[1:]
-    sd1 = float(np.std(rr_n1 - rr_n) / np.sqrt(2))
-    sd2 = float(np.std(rr_n1 + rr_n) / np.sqrt(2))
-    feats["sd1_ms"] = round(sd1, 2)
-    feats["sd2_ms"] = round(sd2, 2)
+    # Poincaré SD1/SD2 уже в feats (ddof=1); добавляем только отношение.
+    sd1 = float(feats.get("sd1_ms", float("nan")))
+    sd2 = float(feats.get("sd2_ms", float("nan")))
     feats["sd2_sd1_ratio"] = round(sd2 / sd1, 3) if sd1 > 0 else np.nan
 
     # Спектральные пики и нормированные доли.

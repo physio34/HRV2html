@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
-from scipy.integrate import cumulative_trapezoid, trapezoid
+from scipy.integrate import trapezoid
 from scipy.interpolate import CubicSpline
 from scipy.spatial import cKDTree as KDTree
 
@@ -58,7 +58,10 @@ def compute_time_domain_features(rr_intervals: np.ndarray) -> Dict[str, float]:
     mean_rr = float(np.mean(rr_intervals))
 
     duration_sec = np.sum(rr_intervals) / 1000.0
-    # SDANN вычисляется только для записей >= 5 минут
+    # SDANN вычисляется только для записей >= 5 минут.
+    # Приближение: разбиение по числу комплексов через средний RR, неполный
+    # последний сегмент отбрасывается. При наличии меток времени точнее
+    # сегментировать по реальному времени.
     if duration_sec >= 300 and mean_rr > 0:
         n_segments = int(duration_sec // 300)
         segment_means = []
@@ -81,48 +84,109 @@ def compute_time_domain_features(rr_intervals: np.ndarray) -> Dict[str, float]:
     }
 
 
+def _build_cumulative_time(rr_intervals: np.ndarray,
+                             time_column: Optional[np.ndarray] = None) -> np.ndarray:
+    """Временная шкала тахограммы в секундах.
+
+    Соглашение: каждый RR относится к моменту окончания интервала,
+    t[k] = sum(rr[0..k]) / 1000. Используется cumsum, а НЕ
+    cumulative_trapezoid (усреднение соседних RR искажает шкалу).
+    Внешний time_column валидируется (конечность, строгая монотонность);
+    единицы автоопределяются: медианный шаг > 5 c считается миллисекундами.
+    """
+    rr = np.asarray(rr_intervals, dtype=float)
+    if time_column is not None:
+        try:
+            tc = np.asarray(time_column, dtype=float)
+            if (len(tc) == len(rr) and np.all(np.isfinite(tc))
+                    and np.all(np.isfinite(rr)) and np.all(rr > 0)
+                    and np.all(np.diff(tc) > 0)):
+                t = tc - tc[0]
+                if len(t) > 1 and float(np.median(np.diff(t))) > 5.0:
+                    t = t / 1000.0  # столбец был в мс
+                return t
+        except Exception:
+            pass
+    # fallback: накопительное суммирование (время окончания интервалов)
+    return np.cumsum(rr / 1000.0)
+
+
+def _band_power(freqs: np.ndarray, psd: np.ndarray, lo: float, hi: float) -> float:
+    """Интеграл PSD на [lo, hi) с интерполяцией значений на точных границах."""
+    freqs = np.asarray(freqs, dtype=float)
+    psd = np.asarray(psd, dtype=float)
+    if len(freqs) < 2 or not np.all(np.isfinite(psd)):
+        return 0.0
+    inside = (freqs > lo) & (freqs < hi)
+    x = [lo]
+    y = [float(np.interp(lo, freqs, psd))]
+    x.extend(freqs[inside].tolist())
+    y.extend(psd[inside].tolist())
+    x.append(hi)
+    y.append(float(np.interp(hi, freqs, psd)))
+    return float(trapezoid(np.asarray(y), x=np.asarray(x)))
+
+
 def compute_frequency_domain_features(rr_intervals: np.ndarray, fs: float = 4.0,
-                                       time_column: Optional[np.ndarray] = None) -> Dict[str, float]:
-    """Вычисляет спектральные показатели ВСР методом Уэлча."""
+                                       time_column: Optional[np.ndarray] = None,
+                                       detrend_order: int = 3) -> Dict[str, float]:
+    """Вычисляет спектральные показатели ВСР методом Уэлча.
 
-    if time_column is not None and len(time_column) == len(rr_intervals):
-        cumulative_time = time_column - time_column[0]
-    else:
-        cumulative_time = cumulative_trapezoid(rr_intervals / 1000.0, initial=0)
+    detrend_order: степень полиномиального тренда (по умолчанию 3).
+    Внимание: удаление тренда влияет на VLF/нижнюю часть LF.
+    PSD имеет единицы мс^2/Гц, интегралы — мс^2.
+    """
 
-    if cumulative_time[-1] <= 0:
-        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freqs", "psd"]}
+    rr_intervals = np.asarray(rr_intervals, dtype=float)
+    if len(rr_intervals) < 2 or not np.all(np.isfinite(rr_intervals)) or np.any(rr_intervals <= 0):
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
 
-    t_uniform = np.arange(0, cumulative_time[-1], 1.0 / fs)
+    cumulative_time = _build_cumulative_time(rr_intervals, time_column)
 
-    # ИСПРАВЛЕНИЕ 1: Кубическая сплайн-интерполяция (сохраняет высокочастотные HF-волны)
-    cs = CubicSpline(cumulative_time, rr_intervals)
-    rr_uniform = cs(t_uniform)
+    if len(cumulative_time) != len(rr_intervals) or not np.all(np.isfinite(cumulative_time)):
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
 
-    # ИСПРАВЛЕНИЕ 2: Удаление полиномиального тренда (3-я степень) для исключения утечки спектра в VLF и LF
+    if cumulative_time[-1] <= 0 or not np.all(np.diff(cumulative_time) > 0):
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
+
+    # Равномерная сетка от первого до последнего отсчёта (без экстраполяции назад к 0)
+    t_uniform = np.arange(cumulative_time[0], cumulative_time[-1], 1.0 / fs)
+    if len(t_uniform) < 16:
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
+
+    # Кубическая сплайн-интерполяция (сохраняет высокочастотные HF-волны)
+    try:
+        cs = CubicSpline(cumulative_time, rr_intervals)
+        rr_uniform = cs(t_uniform)
+    except Exception:
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
+    if not np.all(np.isfinite(rr_uniform)):
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
+
+    # Удаление полиномиального тренда (влияет на VLF/LF — см. docstring)
     x_uniform = np.arange(len(rr_uniform))
-    coeffs = np.polyfit(x_uniform, rr_uniform, 3)
+    coeffs = np.polyfit(x_uniform, rr_uniform, detrend_order)
     trend = np.polyval(coeffs, x_uniform)
     rr_detrended = rr_uniform - trend
 
-    nperseg = min(256, len(rr_detrended))
-    if nperseg < 16: # Защита от слишком коротких записей
-        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freqs", "psd"]}
+    # Адаптивный nperseg: не фиксируем 256 для длинных записей, cap 512
+    if len(rr_detrended) < 16:  # Защита от слишком коротких записей
+        return {k: float('nan') for k in ["vlf_ms2", "lf_ms2", "hf_ms2", "total_power_ms2", "lf_hf_ratio", "lf_norm", "hf_norm", "freq_resolution_hz", "n_lf_bins", "n_hf_bins", "freqs", "psd"]}
+    nperseg = min(512, len(rr_detrended))
 
     # Метод Уэлча по умолчанию применяет окно Хеннинга, что правильно
-    freqs, psd = signal.welch(rr_detrended, fs=fs, nperseg=nperseg, scaling='density')
+    freqs, psd = signal.welch(rr_detrended, fs=fs, nperseg=nperseg, noverlap=nperseg // 2, scaling='density')
+    freq_res = float(fs / nperseg)
+    n_lf = int(np.sum((freqs >= 0.04) & (freqs < 0.15)))
+    n_hf = int(np.sum((freqs >= 0.15) & (freqs < 0.4)))
 
-    vlf_mask = (freqs >= 0.003) & (freqs < 0.04)
-    lf_mask = (freqs >= 0.04) & (freqs < 0.15)
-    hf_mask = (freqs >= 0.15) & (freqs < 0.4)
-
-    lf = float(trapezoid(psd[lf_mask], x=freqs[lf_mask])) if np.any(lf_mask) else 0.0
-    hf = float(trapezoid(psd[hf_mask], x=freqs[hf_mask])) if np.any(hf_mask) else 0.0
+    lf = _band_power(freqs, psd, 0.04, 0.15)
+    hf = _band_power(freqs, psd, 0.15, 0.4)
 
     # VLF валиден только для записей >= 5 минут
     duration_sec = np.sum(rr_intervals) / 1000.0
-    if duration_sec >= 300 and np.any(vlf_mask):
-        vlf = float(trapezoid(psd[vlf_mask], x=freqs[vlf_mask]))
+    if duration_sec >= 300:
+        vlf = _band_power(freqs, psd, 0.003, 0.04)
     else:
         vlf = float('nan')
 
@@ -138,6 +202,8 @@ def compute_frequency_domain_features(rr_intervals: np.ndarray, fs: float = 4.0,
     lf_norm = lf / denominator * 100 if denominator > 0 else float('nan')
     hf_norm = hf / denominator * 100 if denominator > 0 else float('nan')
 
+    # lf_norm/hf_norm — относительные доли от (LF+HF), в сумме ~100%; не являются
+    # независимыми мерами активности отделов ВНС.
     return {
         "vlf_ms2": round(vlf, 2) if not pd.isna(vlf) else float('nan'),
         "lf_ms2": round(lf, 2),
@@ -146,6 +212,9 @@ def compute_frequency_domain_features(rr_intervals: np.ndarray, fs: float = 4.0,
         "lf_hf_ratio": round(lf_hf_ratio, 3) if not pd.isna(lf_hf_ratio) else float('nan'),
         "lf_norm": round(lf_norm, 2) if not pd.isna(lf_norm) else float('nan'),
         "hf_norm": round(hf_norm, 2) if not pd.isna(hf_norm) else float('nan'),
+        "freq_resolution_hz": round(freq_res, 5),
+        "n_lf_bins": n_lf,
+        "n_hf_bins": n_hf,
         "freqs": freqs,
         "psd": psd
     }
@@ -157,6 +226,10 @@ def compute_spectral_peak_features(rr_intervals: np.ndarray, fs: float = 4.0,
     freq_features = compute_frequency_domain_features(rr_intervals, fs=fs, time_column=time_column)
     freqs = freq_features["freqs"]
     psd = freq_features["psd"]
+    if not isinstance(freqs, np.ndarray) or not isinstance(psd, np.ndarray):
+        return {"peak_vlf_hz": float('nan'), "peak_lf_hz": float('nan'),
+                "peak_hf_hz": float('nan'), "fraction_lf_nu": float('nan'),
+                "fraction_hf_nu": float('nan')}
 
     vlf_mask = (freqs >= 0.003) & (freqs < 0.04)
     lf_mask = (freqs >= 0.04) & (freqs < 0.15)
@@ -287,18 +360,24 @@ def _multiscale_entropy(rr: np.ndarray, max_scale: int = 20, m: int = 2, r: floa
             continue
         entropies.append(compute_sample_entropy(cg_rr, m=m, r=r))
 
-    entropies = np.array(entropies)
-    valid = entropies[~np.isnan(entropies)]
-    if len(valid) < 2:
+    entropies = np.array(entropies, dtype=float)
+    scales = np.arange(1, max_scale + 1)
+    mask = ~np.isnan(entropies)
+    if int(np.sum(mask)) < 2:
         return {"mse_mean": float('nan'), "mse_slope": float('nan')}
     return {
-        "mse_mean": float(np.mean(valid)),
-        "mse_slope": float(np.polyfit(np.arange(1, len(valid) + 1), valid, 1)[0])
+        "mse_mean": float(np.mean(entropies[mask])),
+        # наклон по исходным номерам масштабов, а не по порядковым номерам валидных
+        "mse_slope": float(np.polyfit(scales[mask], entropies[mask], 1)[0])
     }
 
 
 def compute_entropy_features(rr_intervals: np.ndarray) -> Dict[str, float]:
-    """Расширенный энтропийный/фрактальный анализ с учётом условий применимости."""
+    """Расширенный энтропийный/фрактальный анализ с учётом условий применимости.
+
+    Пороги интерпретации SampEn/ApEn/FuzzyEn/MSE нельзя переносить между
+    реализациями без проверки: нормировки и параметры r/m различаются.
+    """
     rr = np.asarray(rr_intervals, dtype=float)
     n = len(rr)
     feats: Dict[str, float] = {}
@@ -349,7 +428,11 @@ def compute_entropy_features(rr_intervals: np.ndarray) -> Dict[str, float]:
 
 
 def compute_baevsky_indices(rr_intervals: np.ndarray) -> Dict[str, float]:
-    """Вычисляет классические индексы Баевского: ИН, ПАПР, ВПР."""
+    """Вычисляет классические индексы Баевского: ИН, ПАПР, ВПР.
+
+    Условность: ширина бина фиксирована 50 мс, сетка привязана к
+    floor(min/50)*50; Мо/АМо (и ИН) зависят от положения границ бинов.
+    """
     # Стандарт вариационной пульсометрии требует не менее 100 интервалов
     if len(rr_intervals) < 100:
         return {"in_index": float('nan'), "papr": float('nan'), "vpr": float('nan'),
@@ -405,7 +488,8 @@ def compute_all_hrv_features(rr_intervals: np.ndarray,
     features.update(compute_entropy_features(rr_intervals))
     features.update(compute_baevsky_indices(rr_intervals))
 
-    # SD1 и SD2 (Пуанкаре)
+    # SD1 и SD2 (Пуанкаре). SD1 = SDSD/sqrt(2); равен RMSSD/sqrt(2) только при
+    # нулевом среднем последовательных разностей и том же ddof.
     if len(rr_intervals) > 2:
         rr_n = rr_intervals[:-1]
         rr_n1 = rr_intervals[1:]
@@ -433,6 +517,9 @@ def remove_outliers_moving_average(rr_intervals: np.ndarray, window_size: int = 
     """
     Удаляет выбросы на основе скользящей медианы (устойчиво к экстрасистолам)
     и заменяет их линейной интерполяцией (без изменения длины ряда).
+    Возвращает (исправленный ряд, число заменённых отсчётов, time_column).
+    Ограничение: сигма-критерий от отклонений может пропускать выбросы при
+    раздутом std или отмечать лишнее при нетипичном распределении.
     """
     if len(rr_intervals) < window_size:
         return rr_intervals, 0, time_column
@@ -440,13 +527,19 @@ def remove_outliers_moving_average(rr_intervals: np.ndarray, window_size: int = 
     # ИСПРАВЛЕНИЕ 4: Использование скользящей медианы вместо среднего
     # medfilt требует нечетный размер окна
     win_size = window_size if window_size % 2 != 0 else window_size + 1
-    moving_med = signal.medfilt(rr_intervals, kernel_size=win_size)
+    moving_med = signal.medfilt(np.asarray(rr_intervals, dtype=float), kernel_size=win_size)
 
-    deviations = np.abs(rr_intervals - moving_med)
+    deviations = np.abs(np.asarray(rr_intervals, dtype=float) - moving_med)
     std_dev = np.std(deviations, ddof=1) if len(deviations) > 1 else 0.0
 
-    if std_dev == 0:
-        return rr_intervals, 0, time_column
+    if std_dev == 0 or not np.isfinite(std_dev):
+        # fallback на MAD, чтобы константный ряд с одиночным выбросом чистился
+        med = float(np.median(deviations))
+        mad = float(np.median(np.abs(deviations - med)))
+        scale = 1.4826 * mad
+        if scale == 0 or not np.isfinite(scale):
+            return rr_intervals, 0, time_column
+        std_dev = scale
 
     valid_mask = deviations < (threshold * std_dev)
     n_removed = len(rr_intervals) - np.sum(valid_mask)
@@ -505,30 +598,30 @@ DEFAULT_NORMS: Dict[str, Dict[str, Any]] = {
         }
     },
     "lf_hf_ratio": {
-        "desc": "LF/HF (баланс симпатико-вагусных влияний)", "unit": "",
+        "desc": "LF/HF (грубый индекс, не мера баланса)", "unit": "",
         "green": [1.0, 2.0], "yellow": [0.5, 3.0], "category": "balance",
         "interpretation": {
-            "normal": "Норма",
-            "low": {"moderate": "Ниже нормы. Умеренная ваготония", "severe": "Значительно ниже нормы. Выраженная ваготония"},
-            "high": {"moderate": "Выше нормы. Умеренная симпатикотония", "severe": "Значительно выше нормы. Выраженная симпатикотония"}
+            "normal": "Норма. Отношение в заданных границах; само по себе не доказывает вегетативный баланс",
+            "low": {"moderate": "Ниже нормы. Относительное преобладание HF; трактовать только в контексте записи", "severe": "Значительно ниже нормы. Выраженное относительное преобладание HF; не диагноз ваготонии"},
+            "high": {"moderate": "Выше нормы. Относительное преобладание LF; трактовать только в контексте записи", "severe": "Значительно выше нормы. Выраженное относительное преобладание LF; не диагноз симпатикотонии"}
         }
     },
     "hf_ms2": {
-        "desc": "HF мощность (вагусный контроль)", "unit": "мс",
+        "desc": "HF мощность (преимущественно вагусная)", "unit": "мс²",
         "green": [500, 3000], "yellow": [200, 500], "category": "parasympathetic",
         "interpretation": {
             "normal": "Норма",
-            "low": {"moderate": "Ниже нормы. Умеренное снижение вагусного влияния", "severe": "Значительно ниже нормы. Выраженная симпатизация"},
-            "high": {"moderate": "Выше нормы. Умеренная ваготония", "severe": "Значительно выше нормы. Выраженная ваготония"}
+            "low": {"moderate": "Ниже нормы. Умеренное снижение мощности HF", "severe": "Значительно ниже нормы. Выраженное снижение мощности HF"},
+            "high": {"moderate": "Выше нормы. Умеренно повышенная мощность HF", "severe": "Значительно выше нормы. Выраженно повышенная мощность HF"}
         }
     },
     "lf_ms2": {
-        "desc": "LF мощность (симпатический контроль)", "unit": "мс",
-        "green": [300, 2000], "yellow": [100, 300], "category": "sympathetic",
+        "desc": "LF мощность (смешанная, не чисто симпатическая)", "unit": "мс²",
+        "green": [300, 2000], "yellow": [100, 300], "category": "mixed",
         "interpretation": {
-            "normal": "Норма",
-            "low": {"moderate": "Ниже нормы. Умеренное снижение симпатического влияния", "severe": "Значительно ниже нормы. Выраженная ваготония"},
-            "high": {"moderate": "Выше нормы. Умеренная симпатикотония", "severe": "Значительно выше нормы. Выраженная симпатикотония"}
+            "normal": "Норма. Мощность LF в заданных границах; LF отражает смешанные (барорефлекторные, вагусные и симпатические) механизмы",
+            "low": {"moderate": "Ниже нормы. Умеренно сниженная мощность LF (неспецифично)", "severe": "Значительно ниже нормы. Выраженно сниженная мощность LF (неспецифично)"},
+            "high": {"moderate": "Выше нормы. Умеренно повышенная мощность LF; не является доказательством симпатикотонии", "severe": "Значительно выше нормы. Выраженно повышенная мощность LF; не является доказательством симпатикотонии"}
         }
     },
     "in_index": {
@@ -721,31 +814,51 @@ def get_indicator_interpretation(value: float, metric_name: str, norms: Dict[str
 # =============================================================================
 
 def detect_rr_column(df: pd.DataFrame) -> str:
-    """Автоопределение столбца с RR-интервалами."""
-    cols_lower = {c: str(c).lower().strip() for c in df.columns}
-    rr_patterns = ['rr', 'nn', 'rr_interval', 'nn_interval', 'rri', 'r-r', 'n-n', 'interbeat', 'ibi', 'interval', 'ms']
+    """Автоопределение столбца с RR-интервалами.
 
-    rr_col = next((c for c, l in cols_lower.items() if any(p in l for p in rr_patterns)), None)
-    if rr_col is None:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0:
-            rr_col = numeric_cols[0]
-        else:
-            raise ValueError("Не найден столбец с RR-интервалами")
-    return rr_col
+    Строгий порядок: точное совпадение > токен с границами слов.
+    Голый 'ms' как подстрока НЕ используется, чтобы не выбрать 'timestamp_ms'.
+    """
+    import re as _re
+    cols_lower = {c: str(c).lower().strip() for c in df.columns}
+    # 1) точные имена
+    exact = ['rr', 'nn', 'rri', 'ibi', 'rr_interval', 'nn_interval']
+    for c, l in cols_lower.items():
+        if l in exact:
+            return c
+    # 2) токены с границами слов (без голого 'ms' и без одиночных букв)
+    tokens = ['rr', 'nn', 'rri', 'ibi', 'interbeat', 'interval', 'rr_interval', 'nn_interval']
+    for c, l in cols_lower.items():
+        norm = _re.sub(r'[^a-z0-9]+', ' ', l)
+        words = set(norm.split())
+        if words & set(tokens):
+            return c
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) > 0:
+        return numeric_cols[0]
+    raise ValueError("Не найден столбец с RR-интервалами")
 
 
 def detect_time_column(df: pd.DataFrame, exclude_col: str = None) -> Optional[str]:
-    """Автоопределение столбца времени."""
+    """Автоопределение столбца времени (без одиночной 't' как подстроки)."""
+    import re as _re
     cols_lower = {c: str(c).lower().strip() for c in df.columns}
-    time_patterns = ['peak_time', 'time', 'timestamp', 't', 'elapsed', 'clock', 'datetime', 'epoch', 'timesec', 'time_s', 'time_sec', 'time_ms']
-
-    for pattern in time_patterns:
+    exact_priority = ['peak_time', 'timestamp', 'time', 'elapsed', 'clock', 'datetime',
+                      'epoch', 'timesec', 'time_s', 'time_sec', 'time_ms']
+    for pattern in exact_priority:
         for c, l in cols_lower.items():
-            if c == exclude_col: continue
+            if c == exclude_col:
+                continue
             if l == pattern or l.startswith(pattern + '_') or l.endswith('_' + pattern):
                 return c
-            if pattern in l and not any(p in l for p in ['rr', 'nn', 'ibi']):
+    # fallback только по границам слов, исключая rr/nn/ibi-столбцы
+    for c, l in cols_lower.items():
+        if c == exclude_col:
+            continue
+        norm = _re.sub(r'[^a-z0-9]+', ' ', l)
+        words = set(norm.split())
+        if words & {'time', 'timestamp', 'elapsed', 'clock', 'datetime', 'epoch'}:
+            if not (words & {'rr', 'nn', 'ibi', 'interval'}):
                 return c
     return None
 
@@ -781,27 +894,30 @@ def load_rr_intervals_from_file(filepath: Union[str, Path]) -> Tuple[np.ndarray,
         raise ValueError(f"Файл {filepath.name} пустой")
 
     rr_col = detect_rr_column(df)
-    rr_raw = df[rr_col].dropna().to_numpy(dtype=float)
+    time_col = detect_time_column(df, exclude_col=rr_col)
 
-    if len(rr_raw) == 0:
+    # Совместная очистка NaN, чтобы RR и время оставались построчно согласованы
+    cols = [rr_col] + ([time_col] if time_col is not None else [])
+    sub = df[cols].copy()
+    sub[rr_col] = pd.to_numeric(sub[rr_col], errors='coerce')
+    if time_col is not None:
+        sub[time_col] = pd.to_numeric(sub[time_col], errors='coerce')
+    sub = sub.dropna()
+    if sub.empty:
         raise ValueError(f"Столбец {rr_col} не содержит числовых значений")
 
+    rr_raw = sub[rr_col].to_numpy(dtype=float)
     units = detect_rr_units(rr_raw, col_name=str(rr_col))
     if units == 'sec':
         rr_intervals = rr_raw * 1000.0
     else:
         rr_intervals = rr_raw
 
-    time_col = detect_time_column(df, exclude_col=rr_col)
     time_array = None
     if time_col is not None:
-        time_raw = df[time_col].dropna().to_numpy(dtype=float)
-        if len(time_raw) == len(rr_intervals):
-            time_array = time_raw
-        else:
-            time_array = None
+        time_array = sub[time_col].to_numpy(dtype=float)
 
-    valid_mask = (rr_intervals >= 300) & (rr_intervals <= 2000)
+    valid_mask = np.isfinite(rr_intervals) & (rr_intervals >= 300) & (rr_intervals <= 2000)
     rr_intervals = rr_intervals[valid_mask]
     if time_array is not None:
         time_array = time_array[valid_mask]
@@ -828,22 +944,32 @@ def safe_fmt(val, fmt=".1f"):
     return f"{val:{fmt}}" if not pd.isna(val) else "N/A"
 
 def plot_hrv_analysis(rr_intervals_original: np.ndarray, rr_intervals_filtered: np.ndarray,
-                       title: str, time_column: Optional[np.ndarray] = None) -> plt.Figure:
-    """Генерация расширенного сводного графика анализа ВСР."""
+                       title: str, time_column: Optional[np.ndarray] = None,
+                       n_removed_outliers: Optional[int] = None) -> plt.Figure:
+    """Генерация расширенного сводного графика анализа ВСР.
+
+    n_removed_outliers передаётся из remove_outliers_moving_average()
+    (пересчёт через isnan неверен, т.к. выбросы интерполируются).
+    """
     fig = plt.figure(figsize=(16, 12))
     fig.suptitle(title, fontweight='bold', fontsize=14)
 
     freq_features = compute_frequency_domain_features(rr_intervals_filtered, fs=4.0, time_column=time_column)
     freqs = freq_features['freqs']
     psd = freq_features['psd']
+    if not isinstance(freqs, np.ndarray) or not isinstance(psd, np.ndarray):
+        freqs = np.asarray([])
+        psd = np.asarray([])
 
     ax1 = plt.subplot(2, 3, 1)
-    if time_column is not None and len(time_column) == len(rr_intervals_filtered):
-        cumulative_time_filt = time_column - time_column[0]
-        cumulative_time_orig = cumulative_trapezoid(rr_intervals_original / 1000.0, initial=0)
+    # Единая временная шкала: валидный time_column используется для обеих кривых;
+    # иначе cumsum (время окончания интервалов). Разные шкалы скрывали бы замены.
+    if time_column is not None and len(time_column) == len(rr_intervals_filtered) == len(rr_intervals_original):
+        cumulative_time_filt = _build_cumulative_time(rr_intervals_filtered, time_column)
+        cumulative_time_orig = _build_cumulative_time(rr_intervals_original, time_column)
     else:
-        cumulative_time_orig = cumulative_trapezoid(rr_intervals_original / 1000.0, initial=0)
-        cumulative_time_filt = cumulative_trapezoid(rr_intervals_filtered / 1000.0, initial=0)
+        cumulative_time_orig = _build_cumulative_time(np.asarray(rr_intervals_original, dtype=float), None)
+        cumulative_time_filt = _build_cumulative_time(np.asarray(rr_intervals_filtered, dtype=float), None)
     cumulative_time_orig_min = cumulative_time_orig / 60.0
     cumulative_time_filt_min = cumulative_time_filt / 60.0
 
@@ -870,7 +996,7 @@ def plot_hrv_analysis(rr_intervals_original: np.ndarray, rr_intervals_filtered: 
     if np.any(lf_mask): ax3.fill_between(freqs[lf_mask], psd[lf_mask], alpha=0.3, color='#ffc107', label='LF')
     if np.any(hf_mask): ax3.fill_between(freqs[hf_mask], psd[hf_mask], alpha=0.3, color='#198754', label='HF')
     ax3.set_title("Спектральная плотность мощности (PSD)")
-    ax3.set_xlabel("Частота (Гц)"); ax3.set_ylabel("PSD (мс/Гц)"); ax3.set_xlim(0, 0.5); ax3.grid(True, alpha=0.3)
+    ax3.set_xlabel("Частота (Гц)"); ax3.set_ylabel("PSD (мс²/Гц)"); ax3.set_xlim(0, 0.5); ax3.grid(True, alpha=0.3)
     ax3.legend(loc='upper right', fontsize=9)
 
     ax4 = plt.subplot(2, 3, 4)
@@ -910,9 +1036,9 @@ def plot_hrv_analysis(rr_intervals_original: np.ndarray, rr_intervals_filtered: 
         f"• RMSSD: {safe_fmt(features['rmssd_ms'])} мс\n"
         f"• pNN50: {safe_fmt(features['pnn50_percent'])}%\n\n"
         f"Спектральные:\n"
-        f"• VLF: {safe_fmt(features['vlf_ms2'])} мс\n"
-        f"• LF: {safe_fmt(features['lf_ms2'])} мс\n"
-        f"• HF: {safe_fmt(features['hf_ms2'])} мс\n"
+        f"• VLF: {safe_fmt(features['vlf_ms2'])} мс²\n"
+        f"• LF: {safe_fmt(features['lf_ms2'])} мс²\n"
+        f"• HF: {safe_fmt(features['hf_ms2'])} мс²\n"
         f"• LF/HF: {safe_fmt(features['lf_hf_ratio'], '.2f')}\n\n"
         f"Нелинейные:\n"
         f"• Sample Entropy: {safe_fmt(features['sample_entropy'], '.3f')}\n"
@@ -934,12 +1060,17 @@ def plot_hrv_analysis(rr_intervals_original: np.ndarray, rr_intervals_filtered: 
 
     ax6 = plt.subplot(2, 3, 6)
     ax6.axis('off')
-    n_removed = len(rr_intervals_original) - np.sum(~np.isnan(rr_intervals_filtered)) # Approximation for display
+    if n_removed_outliers is None:
+        n_removed_str = "N/A (передайте из remove_outliers_moving_average)"
+    else:
+        n_removed_str = str(int(n_removed_outliers))
     filter_info = (
         f"Параметры анализа:\n\n"
         f"• Исходных RR: {len(rr_intervals_original)}\n"
         f"• После фильтрации: {len(rr_intervals_filtered)}\n"
-        f"• Длительность: {safe_fmt(features['duration_min'], '.2f')} мин\n\n"
+        f"• Заменено выбросов: {n_removed_str}\n"
+        f"• Длительность: {safe_fmt(features['duration_min'], '.2f')} мин\n"
+        f"• Δf: {safe_fmt(freq_features.get('freq_resolution_hz'), '.4f')} Гц\n\n"
         f"Частотные диапазоны:\n"
         f"• VLF: 0.003-0.04 Гц\n"
         f"• LF: 0.04-0.15 Гц\n"
